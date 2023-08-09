@@ -1442,7 +1442,7 @@ NOTES TO CONSIDER:
 )
 
 
-, final_cte AS (
+, pre_final_cte AS (
 SELECT *
 FROM recipe_pool_crosspreferences
 UNION ALL
@@ -1452,15 +1452,33 @@ FROM final_table
     )
 
 
+, final_cte AS (
 SELECT *
-FROM final_cte
+FROM pre_final_cte
 WHERE (UPPER(country) IN ("DKSE","NO","IE") AND LOWER(status)='ready for menu planning')
     OR (UPPER(country)="GB" AND LOWER(status) IN ('ready for menu planning','in development', 'final cook', 'external testing'))
     OR (UPPER(country)="IT" AND LOWER(status) IN ('ready for menu planning','in development'))
     OR (UPPER(country)="BENELUX" AND LOWER(status) IN ('ready for menu planning','under improvement'))
     OR (UPPER(country)="FR" AND LOWER(status) IN ('ready for menu planning','planned'))
 ORDER BY 2,3
+)
 
+
+SELECT DISTINCT *,
+    CASE
+        WHEN Calorie_Smart IS NOT NULL THEN 'Calorie Smart'
+        WHEN Carb_Smart IS NOT NULL THEN 'Carb Smart'
+        WHEN Classic IS NOT NULL THEN 'Classic'
+        WHEN Discovery IS NOT NULL THEN 'Discovery'
+        WHEN Family IS NOT NULL THEN 'Family'
+        WHEN Pescatarian IS NOT NULL THEN 'Pescatarian'
+        WHEN Quick_and_Easy IS NOT NULL THEN 'Quick and Easy'
+        WHEN Vegan IS NOT NULL THEN 'Vegan'
+        WHEN Veggie IS NOT NULL THEN 'Veggie'
+        ELSE 'EMPTY_PREFERENCE'
+    END AS Preferences
+FROM final_cte
+ORDER BY 2,3
 
 
 
