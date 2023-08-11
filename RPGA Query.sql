@@ -1623,8 +1623,6 @@ SELECT DISTINCT *,
         ELSE 'EMPTY_PREFERENCE'
     END AS Preferences
 FROM final_cte
-WHERE country ='FR'
-
 ORDER BY 2,3
 
 
