@@ -55,7 +55,6 @@ WITH recipe_scores_countries_simple AS
   WHERE Max_Rank = 1
 ) --- this CTE includes markets: BNL, DKSE, FR, IE, IT, NO
 
-
 --------------------------------------------------------------------------------------------------------------
 , recipe_scores_countries_complex AS
 (
@@ -146,7 +145,7 @@ NOTES TO CONSIDER:
         END AS country_final_id --In order to join with all_recipes and unique code
   FROM  materialized_views.culinary_services_recipe_segment_nutrition
   WHERE segment <> 'DK' AND segment <> 'JP' AND country <> 'ES'
-    OR  country = 'GB' AND market = 'gb'
+    OR  (country = 'GB' AND market = ('gb'))
 )
 
 --*************************************************  3 COSTS/SKU COSTS  *************************************************
@@ -176,12 +175,14 @@ NOTES TO CONSIDER:
             THEN 'DKSE'
           WHEN segment IN ('BE','NL','LU') AND distribution_center = 'DH'
             THEN 'BNL'
+          WHEN segment IN ('FR') AND distribution_center = 'DH'
+            THEN 'FR'
           ELSE segment
         END AS segment,
         recipe_id,
         size,
         AVG(price) AS cost
-  FROM  materialized_views.culinary_services_recipe_static_price
+  FROM materialized_views.culinary_services_recipe_static_price
   WHERE hellofresh_week >= '2023-W30' AND hellofresh_week <= '2023-W43'AND -- Here is filter for weeks
         segment IN ('IT','IE')
     OR  distribution_center = 'DH' -- for adding benelux
@@ -190,6 +191,8 @@ NOTES TO CONSIDER:
     OR  segment = 'NO' AND distribution_center = 'MO'
   GROUP BY 1,2,3
 )
+
+
 
 ------------NEW PRICING METHOD ALL EXCEPT NO------------
 -- changes
@@ -214,7 +217,7 @@ NOTES TO CONSIDER:
         sku.code,
         sp.currency,
         AVG(sp.price) AS current_quarter_avg_sku_price
-  FROM  materialized_views.procurement_services_staticprices AS sp
+  FROM materialized_views.procurement_services_staticprices AS sp
   LEFT JOIN materialized_views.procurement_services_culinarysku AS sku
     ON  sku.id = sp.culinary_sku_id
   LEFT JOIN dimensions.date_dimension AS hfd
@@ -229,6 +232,32 @@ NOTES TO CONSIDER:
     OR  sku.market IN ('it','ie','beneluxfr','es')
   GROUP BY 1,2,3
 )
+
+, current_quarter_avg_sku_price_FR AS -- calculate avg price of current quarter
+(
+  SELECT
+        CASE
+            WHEN sku.market = 'beneluxfr'
+            THEN 'fr'
+            ELSE sku.market
+        END AS market,
+        sku.code,
+        sp.currency,
+        AVG(sp.price) AS current_quarter_avg_sku_price
+  FROM materialized_views.procurement_services_staticprices AS sp
+  LEFT JOIN materialized_views.procurement_services_culinarysku AS sku
+    ON  sku.id = sp.culinary_sku_id
+  LEFT JOIN dimensions.date_dimension AS hfd
+    ON sp.hellofresh_week = hfd.hellofresh_week
+  WHERE hfd.running_quarter =
+        (
+          SELECT rqm
+          FROM current_running_quarter
+        )
+    OR  sku.market='beneluxfr'
+  GROUP BY 1,2,3
+)
+
 
 
 , next_quarter_avg_sku_price_except_NO AS -- calculate avg price of following quarter
@@ -257,7 +286,31 @@ NOTES TO CONSIDER:
   GROUP BY 1,2
 )
 
-, sku_cost_all_except_NO AS
+ , next_quarter_avg_sku_price_FR AS -- calculate avg price of following quarter
+(
+    SELECT
+        CASE
+            WHEN sku.market = 'beneluxfr'
+            THEN 'fr'
+            ELSE sku.market
+        END AS market,
+        sku.code,
+        AVG(sp.price) AS next_quarter_avg_sku_price
+  FROM  materialized_views.procurement_services_staticprices AS sp
+  LEFT JOIN materialized_views.procurement_services_culinarysku AS sku
+    ON  sku.id = sp.culinary_sku_id
+  LEFT JOIN dimensions.date_dimension AS hfd
+    ON sp.hellofresh_week = hfd.hellofresh_week
+  WHERE hfd.running_quarter =
+        (
+          SELECT rqm + 1
+          FROM current_running_quarter
+        )
+    OR  sku.market ='beneluxfr'
+  GROUP BY 1,2
+)
+
+, sku_cost_all_except_NO_prefinal AS
 (
   SELECT
         cq.market,
@@ -270,6 +323,29 @@ NOTES TO CONSIDER:
   ON cq.market = nq.market AND cq.code = nq.code
     GROUP BY 1,2,3,4,5
 )
+
+, sku_cost_FR AS
+(
+  SELECT
+        cq.market,
+        cq.code,
+        cq.currency,
+        cq.current_quarter_avg_sku_price,
+        nq.next_quarter_avg_sku_price
+  FROM current_quarter_avg_sku_price_FR AS cq
+  LEFT JOIN next_quarter_avg_sku_price_FR AS nq
+  ON cq.market = nq.market AND cq.code = nq.code
+    GROUP BY 1,2,3,4,5
+)
+
+, sku_cost_all_except_NO AS (
+    SELECT * FROM sku_cost_all_except_NO_prefinal
+    UNION
+    SELECT * FROM sku_cost_FR
+
+
+)
+
 ------------NEW PRICING METHOD ALL ONLY NO------------
 
 , current_quarter_avg_sku_price_NO AS -- calculate avg price of current quarter
@@ -450,7 +526,7 @@ NOTES TO CONSIDER:
 --------------------------------------------------------------------------------------------------------------
 --########### BENELUX ADDED AS market = 'benelux'
 
-, picklists_simple AS
+, picklists_simple_1 AS
 (
   SELECT
         unique_recipe_code,
@@ -474,7 +550,7 @@ NOTES TO CONSIDER:
             CASE WHEN current_quarter_avg_sku_price IS NULL or current_quarter_avg_sku_price=0 THEN p.code END AS price_missing,
             SUM(CASE WHEN size = 2 THEN pick_count * current_quarter_avg_sku_price ELSE 0 END) AS cost2p_current,
             SUM(CASE WHEN size = 2 THEN pick_count * next_quarter_avg_sku_price ELSE 0 END) AS cost2p_next
-      FROM  isa_services_recipe_consolidated_simple r
+      FROM isa_services_recipe_consolidated_simple r
       JOIN  materialized_views.culinary_services_recipe_procurement_picklist_culinarysku p
         ON  r.id = p.recipe_id AND r.market = p.market
       JOIN  (
@@ -490,13 +566,68 @@ NOTES TO CONSIDER:
         ON  c.code = p.code AND c.market = p.market
       WHERE (r.market = 'dkse' AND p.segment_name = 'SE')
         OR  (r.market = 'gb' AND p.segment_name = 'GR')
-        OR  (r.market IN ('ie','it','benelux','fr'))
+        OR  (r.market = 'benelux' AND p.segment_name = 'NL')
+        OR  (r.market = 'fr' AND p.segment_name = 'FR')
+        OR  (r.market IN ('ie','it','fr'))
       --r.market IN ('ie','it','gb','jp','dkse',) --r.market filter not really needed but segment_name is needed for dkse and gb
         --AND p.segment_name IN ('IE','IT','GR','JP','SE')
       GROUP BY 1,2,3,4,5,6
     ) AS t
   GROUP BY 1,2,3
 )
+
+, picklists_FR AS
+(
+  SELECT
+        unique_recipe_code,
+        market,
+        currency,
+        CONCAT_WS(" | ", COLLECT_LIST(code)) AS skucode,
+        CONCAT_WS(" | ", COLLECT_LIST(name)) AS skuname,
+        NULL AS boxitem, --NO and DKSE have this column; it is added here for a proper UNION ALL
+        COUNT(DISTINCT code) AS skucount,
+        SUM(cost2p_current) AS cost2p_current,
+        SUM(cost2p_next) AS cost2p_next,
+        CONCAT_WS(" | ", COLLECT_LIST(price_missing)) AS pricemissingskus
+  FROM
+    (
+      SELECT
+            r.unique_recipe_code,
+            p.code,
+            r.market,
+            currency,
+            REGEXP_REPLACE(p.name, '\t|\n', '') AS name,
+            CASE WHEN current_quarter_avg_sku_price IS NULL or current_quarter_avg_sku_price=0 THEN p.code END AS price_missing,
+            SUM(CASE WHEN size = 2 THEN pick_count * current_quarter_avg_sku_price ELSE 0 END) AS cost2p_current,
+            SUM(CASE WHEN size = 2 THEN pick_count * next_quarter_avg_sku_price ELSE 0 END) AS cost2p_next
+      FROM isa_services_recipe_consolidated_simple r
+      JOIN  materialized_views.culinary_services_recipe_procurement_picklist_culinarysku p
+        ON  r.id = p.recipe_id AND r.market = p.market
+      JOIN  (
+              SELECT *,
+                  CASE WHEN market = 'beneluxfr'
+                      THEN 'fr'
+                      ELSE market
+                      END AS market_id
+              FROM materialized_views.procurement_services_culinarysku
+            ) AS pk
+        ON  p.code = pk.code AND p.market = pk.market_id --- p.market = benelux and pk.market = beneluxfr
+      LEFT JOIN sku_cost_all_except_NO AS c
+        ON  c.code = p.code AND c.market = p.market
+      WHERE (r.market = 'fr' AND p.segment_name = 'FR')
+      --r.market IN ('ie','it','gb','jp','dkse',) --r.market filter not really needed but segment_name is needed for dkse and gb
+        --AND p.segment_name IN ('IE','IT','GR','JP','SE')
+      GROUP BY 1,2,3,4,5,6
+    ) AS t
+  GROUP BY 1,2,3
+)
+
+, picklists_simple AS (
+    SELECT * FROM picklists_simple_1
+    UNION
+    SELECT * FROM picklists_FR
+)
+
 --------------------------------------------------------------------------------------------------------------
 
 , picklists_NO AS
@@ -681,7 +812,7 @@ NOTES TO CONSIDER:
   WHERE
         --LOWER(r.recipe_type) <> 'modularity' -- Added in isa_services_recipe_consolidated_all_countries
         --AND LOWER(r.recipe_type) <> 'surcharge' -- Added in isa_services_recipe_consolidated_all_countries
-        r.market NOT IN('jp','benelux')
+        r.market NOT IN('jp')
     AND cost2p_current > 0
     AND
         (r.market ='ie'
@@ -720,6 +851,18 @@ NOTES TO CONSIDER:
         )
     OR
         (r.market IN ('dkse','no')
+        AND LENGTH (r.primary_protein)>0
+        AND r.primary_protein <>'N/A'
+        AND p.cost2p_current > 0
+        )
+    OR
+         (r.market IN ('benelux')
+        AND LENGTH (r.primary_protein)>0
+        AND r.primary_protein <>'N/A'
+        AND p.cost2p_current > 0
+        )
+      OR
+         (r.market IN ('fr')
         AND LENGTH (r.primary_protein)>0
         AND r.primary_protein <>'N/A'
         AND p.cost2p_current > 0
@@ -1023,6 +1166,7 @@ FROM services_recipes_NO
         AND sm.market = rc.market_recipes
 )
 
+
 ----------------------------
 
 
@@ -1300,6 +1444,7 @@ WHERE p.last_week = 1
 )
 
 
+
 --*************************************************  6 CROSS-PREFERENCES  *************************************************
 -- CHECK COSTS2P = NULL, OR CARBS = 999, OR ANY OTHER MISISNG LOGIC (SPECIALLY ITALY AND GB)
 
@@ -1478,6 +1623,8 @@ SELECT DISTINCT *,
         ELSE 'EMPTY_PREFERENCE'
     END AS Preferences
 FROM final_cte
+WHERE country ='FR'
+
 ORDER BY 2,3
 
 
