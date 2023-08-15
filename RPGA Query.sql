@@ -183,12 +183,15 @@ NOTES TO CONSIDER:
         size,
         AVG(price) AS cost
   FROM materialized_views.culinary_services_recipe_static_price
-  WHERE hellofresh_week >= '2023-W30' AND hellofresh_week <= '2023-W43'AND -- Here is filter for weeks
-        segment IN ('IT','IE')
-    OR  distribution_center = 'DH' -- for adding benelux
-    OR  segment = 'SE' AND distribution_center = 'SK'
-    OR  segment='GR' AND distribution_center='GR'
-    OR  segment = 'NO' AND distribution_center = 'MO'
+  WHERE hellofresh_week >= '2023-W30' AND hellofresh_week <= '2023-W43' ----- week filter
+    AND (
+        segment IN ('IT', 'IE')
+      OR (segment = 'NL' AND distribution_center = 'DH')
+      OR (segment = 'SE' AND distribution_center = 'SK')
+      OR (segment = 'GR' AND distribution_center = 'GR')
+      OR (segment = 'NO' AND distribution_center = 'MO')
+      OR (segment = 'FR' AND distribution_center = 'DH')
+      )
   GROUP BY 1,2,3
 )
 
@@ -342,9 +345,8 @@ NOTES TO CONSIDER:
     SELECT * FROM sku_cost_all_except_NO_prefinal
     UNION
     SELECT * FROM sku_cost_FR
-
-
 )
+
 
 ------------NEW PRICING METHOD ALL ONLY NO------------
 
@@ -452,18 +454,17 @@ NOTES TO CONSIDER:
       FROM  materialized_views.isa_services_recipe_consolidated
       WHERE  -- Added in isa_services_recipe_consolidated_all_countries
         (market NOT IN ('jp','es'))
-        AND ((market IN ('dkse','ie') AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge' AND LOWER(status) IN ('ready for menu planning'))
-        OR  (market = 'gb' AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge' AND LOWER(status) IN ('ready for menu planning','in development', 'final cook', 'external testing') AND is_default = 1)
-        OR  (market = 'it' AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge' AND LOWER(status) IN ('ready for menu planning','in development'))
-        OR  (market = 'benelux' AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge' AND LOWER(status) IN ('ready for menu planning','under improvement'))
-        OR  (market = 'fr' AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge' AND LOWER(status) IN ('ready for menu planning','planned')))
+        AND ((market IN ('dkse','ie') /*AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge'*/ AND LOWER(status) IN ('ready for menu planning'))
+        OR  (market = 'gb' /*AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge'*/ AND LOWER(status) IN ('ready for menu planning','in development', 'final cook', 'external testing') AND is_default = 1)
+        OR  (market = 'it' /*AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge'*/ AND LOWER(status) IN ('ready for menu planning','in development'))
+        OR  (market = 'benelux' /*AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge'*/ AND LOWER(status) IN ('ready for menu planning','under improvement'))
+        OR  (market = 'fr' /*AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge'*/ AND LOWER(status) IN ('ready for menu planning','planned')))
     ) AS temp
   WHERE (market NOT IN ('ie','it','es') AND last_version = 1)
-    OR  (market IN ('ie','it') AND is_default = 1 AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge')
+    OR  (market IN ('ie','it') AND is_default = 1 /*AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge'*/)
 )
 
-
---Markets ie, es, gb, it, dkse, benelux, jp
+--Markets ie, gb, it, dkse, benelux, fr
 --------------------------------------------------------------------------------------------------------------
 , isa_services_recipe_consolidated_NO AS
 (
@@ -498,7 +499,7 @@ NOTES TO CONSIDER:
         updated_at,
         1 AS last_version
   FROM isa_services_recipe_consolidated_simple
-  WHERE market = 'dkse' AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge' AND LOWER(status) = 'ready for menu planning'
+  WHERE market = 'dkse' /*AND recipe_type <> 'Modularity' AND recipe_type <> 'Surcharge'*/ AND LOWER(status) = 'ready for menu planning'
 )
 --------------------------------------------------------------------------------------------------------------
 , isa_services_recipe_consolidated_all_countries AS
@@ -514,19 +515,20 @@ NOTES TO CONSIDER:
     AND target_products NOT LIKE 'addon%'
     AND target_products NOT LIKE 'gc-%'
     AND target_products NOT LIKE '%gc-%'
-    AND target_products <> 'modularity'
+    --AND target_products <> 'modularity'
     AND target_products <> '1.2-nl-only'
     AND recipe_type NOT LIKE 'addon%'
     AND recipe_type NOT LIKE 'Add on%'
     AND recipe_type NOT LIKE 'Add-on%'
     AND recipe_type NOT LIKE 'Add-On%'
-    AND dish_type <> '123'
+    --AND dish_type <> '123'
 )
 
 --------------------------------------------------------------------------------------------------------------
 --########### BENELUX ADDED AS market = 'benelux'
+--, picklists_simple_1 AS
 
-, picklists_simple_1 AS
+, picklists_simple AS
 (
   SELECT
         unique_recipe_code,
@@ -551,7 +553,7 @@ NOTES TO CONSIDER:
             SUM(CASE WHEN size = 2 THEN pick_count * current_quarter_avg_sku_price ELSE 0 END) AS cost2p_current,
             SUM(CASE WHEN size = 2 THEN pick_count * next_quarter_avg_sku_price ELSE 0 END) AS cost2p_next
       FROM isa_services_recipe_consolidated_simple r
-      JOIN  materialized_views.culinary_services_recipe_procurement_picklist_culinarysku p
+      JOIN materialized_views.culinary_services_recipe_procurement_picklist_culinarysku p
         ON  r.id = p.recipe_id AND r.market = p.market
       JOIN  (
               SELECT *,
@@ -561,20 +563,19 @@ NOTES TO CONSIDER:
                       END AS market_id
               FROM materialized_views.procurement_services_culinarysku
             ) AS pk
-        ON  p.code = pk.code AND p.market = pk.market_id --- p.market = benelux and pk.market = beneluxfr
+        ON  p.code = pk.code AND p.market = pk.market_id ---p.market = benelux and pk.market = beneluxfr
       LEFT JOIN sku_cost_all_except_NO AS c
         ON  c.code = p.code AND c.market = p.market
       WHERE (r.market = 'dkse' AND p.segment_name = 'SE')
         OR  (r.market = 'gb' AND p.segment_name = 'GR')
         OR  (r.market = 'benelux' AND p.segment_name = 'NL')
         OR  (r.market = 'fr' AND p.segment_name = 'FR')
-        OR  (r.market IN ('ie','it','fr'))
-      --r.market IN ('ie','it','gb','jp','dkse',) --r.market filter not really needed but segment_name is needed for dkse and gb
-        --AND p.segment_name IN ('IE','IT','GR','JP','SE')
+        OR  (r.market IN ('ie','it'))
       GROUP BY 1,2,3,4,5,6
     ) AS t
   GROUP BY 1,2,3
 )
+
 
 , picklists_FR AS
 (
@@ -611,21 +612,13 @@ NOTES TO CONSIDER:
                       END AS market_id
               FROM materialized_views.procurement_services_culinarysku
             ) AS pk
-        ON  p.code = pk.code AND p.market = pk.market_id --- p.market = benelux and pk.market = beneluxfr
+        ON p.code = pk.code AND p.market = pk.market_id
       LEFT JOIN sku_cost_all_except_NO AS c
         ON  c.code = p.code AND c.market = p.market
       WHERE (r.market = 'fr' AND p.segment_name = 'FR')
-      --r.market IN ('ie','it','gb','jp','dkse',) --r.market filter not really needed but segment_name is needed for dkse and gb
-        --AND p.segment_name IN ('IE','IT','GR','JP','SE')
       GROUP BY 1,2,3,4,5,6
     ) AS t
   GROUP BY 1,2,3
-)
-
-, picklists_simple AS (
-    SELECT * FROM picklists_simple_1
-    UNION
-    SELECT * FROM picklists_FR
 )
 
 --------------------------------------------------------------------------------------------------------------
@@ -672,6 +665,9 @@ NOTES TO CONSIDER:
 (
   SELECT *
   FROM picklists_simple
+    UNION ALL
+  SELECT *
+  FROM picklists_FR
     UNION ALL
   SELECT *
   FROM picklists_NO
@@ -870,6 +866,9 @@ NOTES TO CONSIDER:
         --AND LOWER(r.recipe_type) <> 'surcharge' -- Added all surcharges and modularity filters IN ISA_SERVICES)
 )
 
+
+
+
 --*************************************************  6 CROSS-PREFERENCES  *************************************************
 -- CHECK COSTS2P = NULL, OR CARBS = 999, OR ANY OTHER MISISNG LOGIC (SPECIALLY ITALY AND GB)
 
@@ -1065,7 +1064,7 @@ NOTES TO CONSIDER:
     AND region_code <> 'dk'
     AND status <> 'draft'
     AND hfd.running_week >= (SELECT running_week_minus_12 FROM minus_12_weeks) -- filter from last 12 weeks demand
-    AND market NOT IN ( 'ie', 'es', 'jp')
+    AND market NOT IN ( 'es', 'jp')
     GROUP BY 1,2,3,4,5,6,7,8
 )
 
@@ -1439,7 +1438,7 @@ WHERE p.last_week = 1
   FROM joined_services_demand dr
   LEFT JOIN final_preference_slots AS ps
   ON dr.slot_number = ps.slot AND dr.market = ps.country
-  WHERE dr.market NOT IN ('es','ie', 'jp')
+  WHERE dr.market NOT IN ('es','jp')
   AND preference_slot IS NOT NULL
 )
 
@@ -1609,21 +1608,90 @@ ORDER BY 2,3
 )
 
 
+, final_data AS (
 SELECT DISTINCT *,
-    CASE
-        WHEN Calorie_Smart IS NOT NULL THEN 'Calorie Smart'
-        WHEN Carb_Smart IS NOT NULL THEN 'Carb Smart'
-        WHEN Classic IS NOT NULL THEN 'Classic'
-        WHEN Discovery IS NOT NULL THEN 'Discovery'
-        WHEN Family IS NOT NULL THEN 'Family'
-        WHEN Pescatarian IS NOT NULL THEN 'Pescatarian'
-        WHEN Quick_and_Easy IS NOT NULL THEN 'Quick and Easy'
-        WHEN Vegan IS NOT NULL THEN 'Vegan'
-        WHEN Veggie IS NOT NULL THEN 'Veggie'
-        ELSE 'EMPTY_PREFERENCE'
-    END AS Preferences
+    'Calorie Smart' AS Preferences
 FROM final_cte
+WHERE Calorie_Smart IS NOT NULL
+
+UNION
+
+SELECT DISTINCT *,
+    'Carb Smart' AS Preferences
+FROM final_cte
+WHERE Carb_Smart IS NOT NULL
+
+UNION
+
+SELECT DISTINCT *,
+    'Classic' AS Preferences
+FROM final_cte
+WHERE Classic IS NOT NULL
+
+UNION
+
+SELECT DISTINCT *,
+    'Discovery' AS Preferences
+FROM final_cte
+WHERE Discovery IS NOT NULL
+
+UNION
+
+SELECT DISTINCT *,
+    'Family' AS Preferences
+FROM final_cte
+WHERE Family IS NOT NULL
+
+UNION
+
+SELECT DISTINCT *,
+    'Pescatarian' AS Preferences
+FROM final_cte
+WHERE Pescatarian IS NOT NULL
+
+UNION
+
+SELECT DISTINCT *,
+    'Quick and Easy' AS Preferences
+FROM final_cte
+WHERE Quick_and_Easy IS NOT NULL
+
+UNION
+
+SELECT DISTINCT *,
+    'Vegan' AS Preferences
+FROM final_cte
+WHERE Vegan IS NOT NULL
+
+UNION
+
+SELECT DISTINCT *,
+    'Veggie' AS Preferences
+FROM final_cte
+WHERE Veggie IS NOT NULL
+
+UNION
+
+SELECT DISTINCT *,
+  'EMPTY_PREFERENCE' AS Preferences
+FROM final_cte
+WHERE Veggie IS NULL
+            AND Calorie_Smart IS NULL
+            AND Carb_Smart IS NULL
+            AND Classic IS NULL
+            AND Discovery IS NULL
+            AND Family IS NULL
+            AND Pescatarian IS NULL
+            AND Quick_and_Easy IS NULL
+            AND Vegan IS NULL
+            AND Veggie IS NULL
+
+)
+
+SELECT DISTINCT *
+FROM final_data
 ORDER BY 2,3
+
 
 
 
